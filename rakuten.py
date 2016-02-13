@@ -44,23 +44,20 @@ class MongoDB(object):
 class RakutenExtractor(object):
     ''' An extractor for Rakuten Website'''
     def __init__(self, **args):
-        #define entry point for extracting data
+        #TO DO: define entry point for extracting data
         #could be a brand, a category, a subcategory or a keyword
+        # or a mix!
         self.query = args
-        
         #define Backend
         self.db = MongoDB("localhost", 27017, "rakuten")
         #by brands defined by rakuten
         ### BRANDS ENTRY###
         self.brand_url = "http://event.rakuten.co.jp/brand/"
-        ### CATEGORY ENTRY ###
+        ### CATEGORIES ENTRY ###
         self.sitemap_url = "http://directory.rakuten.co.jp"
-        #self.collect_luxury()
-        #by qualified query
-        #self.query = {"brand":None, "category":None, "genre": None, "keyword":None}
-        
-        self.cat_search = "http://search.rakuten.co.jp/search/mall/-/%s/?grp=product" %self.cat_mall_id
-        
+        ### TAGS ENTRY ###
+        #self.genre_url = "http://directory.rakuten.co.jp/category/%s"
+    
     def get_url(self, url):
         '''simple download and basic parser'''
         r = requests.get(url)
@@ -376,15 +373,17 @@ class RakutenExtractor(object):
     
 if __name__== "__main__":
     rk = RakutenExtractor()
-    #multiple methods
     #for the exercice 
     rk.collect_luxury()
     # for the API implementation
     #search by brand every product
-    rk.search_brand("vuitton")
+    
+    #rk.search_brand("vuitton")
     #search by category every brand
-    rk.search_cat("fashiongoods")
+    
+    #rk.search_cat("fashiongoods")
     #search for a specific brand in a specific category
-    rk.search("fashiongoods", "vuitton")
+    #rk.search("fashiongoods", "vuitton")
+    
     #Not implemented
     #rk.search_tag()
