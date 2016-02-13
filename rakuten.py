@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import requests
-from bs4 import BeautifulSoup as bs
+from beautifulsoup4 import BeautifulSoup as bs
 from requests_futures.sessions import FuturesSession
 import re
 import pymongo
@@ -17,7 +17,6 @@ class MongoDB(object):
         self.HOST = host
         self.PORT = port
         self.client = ""
-        self.DB = ""
         uri = self.HOST+":"+str(self.PORT)
         
         try:
@@ -32,8 +31,6 @@ class MongoDB(object):
         self.t_version = tuple(self.version.split("."))
         self.db_name = database_name
         self.db = getattr(self.client,database_name)
-        
-    
     def insert_items(self, data):
         return self.db.items.insert_many(data)
     def insert_search_result(self, data):
@@ -43,7 +40,6 @@ class MongoDB(object):
     def insert_categories(self, data):
         return self.categories.insert(data)
         
-class RakutenSearch(object):
     
 class RakutenExtractor(object):
     ''' An extractor for Rakuten Website'''
@@ -55,25 +51,18 @@ class RakutenExtractor(object):
         #define Backend
         self.db = MongoDB("localhost", 27017, "rakuten")
         #by brands defined by rakuten
+        ### BRANDS ENTRY###
         self.brand_url = "http://event.rakuten.co.jp/brand/"
-        self.brands = self.get_brands()
-        
-        #by main 'category' of product defined by rakuten
-        #self.type_url = "http://directory.rakuten.co.jp"
-        #every main categories urls
-        #self.category_urls = self.get_categories()
-        #by slug category composed by url
-        #cat_url = self.select_category("fashiongoods")
-        #by subcategory
-        #self.sub_cats = self.select_subcats(cat_url)
-        self.collect_luxury()
+        ### CATEGORY ENTRY ###
+        self.sitemap_url = "http://directory.rakuten.co.jp"
+        #self.collect_luxury()
         #by qualified query
         #self.query = {"brand":None, "category":None, "genre": None, "keyword":None}
-    def filter(self):
-        print self.query.keys()
-    
+        
+        self.cat_search = "http://search.rakuten.co.jp/search/mall/-/%s/?grp=product" %self.cat_mall_id
+        
     def get_url(self, url):
-        '''simple download and parser'''
+        '''simple download and basic parser'''
         r = requests.get(url)
         if r.status_code == 200:
             soup = bs(r.text, "lxml").encode("utf-8")
@@ -98,7 +87,7 @@ class RakutenExtractor(object):
         #here initially a list comprehension
         # but decomposed for clarety
         for b in soup.find_all("li"):
-            #filtrer empty items
+            #filter empty items
             # and items that are not brands
             if b.find("a") is not None and b.find("span", {"class":"brandNm"}) is not None:
                 brand_url = b.find("a").get("href")
@@ -106,25 +95,89 @@ class RakutenExtractor(object):
                 name_jp = name_jp.split(u"）")[0]
                 brands[name_en.lower()]= {"en": name_en, "jp": name_jp, "url":brand_url}
         return brands
-
-    def get_categories(self):
-        ''' collect type references url that correspond to top category url
-        from the general directory of the website
-        
-        '''
-        soup = self.get_url(self.type_url)
-        main_type = soup.find_all("h2",{"class":"genreTtl"})
-        return [n.a.get("href") for n in main_type]
     
-    def get_subcategory(self, cat):
-        '''collect every subcategory of a given category'''
-        soup = self.get_url(self.type_url)
+    def get_brand(self, brand ="vuitton"):
+        '''find the brand'''
+        self.brands = self.get_brands()
+        #TODO:
+        #here we should initiate a first recollection
+        # of brands stored in a ref db instead of collecting it each time
+        # self.brands = self.db.brands.find()
+        #
+        #verify if brand exists
+        if brand.lower() in self.brands.keys():
+            return self.brand[brand.lower()]
+        else:
+            self.found = False
+            ## TODO
+            #here we match brand with uncomplete name
+            ## it's a very lazy way of searching
+            ## eg. vuitton ==> louis vuitton
+            ## obviously with a DB system we could search in the jp version
+            ## also making a match rule more wide with a ratio matching
+            ## and more refined search operator such as in Whoosh
+            for b, v in self.brands.items():
+                for n in re.split(" |&|\.", b):
+                    # n is at least a three letter words and not empty
+                    if n != "" and len(n) > 2:
+                        if brand == n:
+                            print("brand %s matches with %s" %(b, brand))
+                            self.brand = self.brands[b]
+                            self.brand_search = "http://search.rakuten.co.jp/search/mall/%s/?grp=product&pc_search=Envoyer" %self.brand
+                            return self
+            print ("brand %s not found\n Launching dummy search" %brand)
+            #if not launch a dummy search
+            self.brand = quote(brand)
+            self.brand_search = "http://search.rakuten.co.jp/search/mall/%s/?grp=product&pc_search=Envoyer" %self.brand
+            return self.brand
+            
+    
+    def get_cats(self):
+        ''' collect every category references from the general directory of the website
+        in a normalized dict and store main mall id
+        {"fashiongoods":{"cat_url": ,"cat_name":,}}
+        '''
+        soup = self.get_url(self.sitemap_url)
+        cats = {}
+        for n in soup.find_all("h2",{"class":"genreTtl"}):
+            cat_url = n.a.get("href")
+            cat_id = cat_url.split("/")[-2]
+            cat_name = n.text
+            #TODO: here should create a keywords lists on subcats
+            #to index and make search on tags available
+            soup = self.get_url(cat_url)
+            cat = soup.find("h1",{"class":"categoryTtl"})
+            mall_url = cat.a.get("href")
+            mall_id = mall_url.split("/")[-2]
+            cats[cat_id] = {"cat_url": cat_url, "cat_name":cat_name, "mall_id":mall_id, "mall_url": mall_url}
+        return cats
+    
+    def get_cat(self, cat):
+        '''find specific cat and return the main mall url'''
+        if cat in self.cats.keys():
+            return self.cats[cat]
+        else:
+            return None     
+    
+    def get_malls(self, cat_id):
+        '''collect every specialized mall for a given category
+        eg: fashiongoods > women handbag
+        '''
+        soup = self.get_url(self.sitemap_url)
         cats = [n.a.get("href") for n in soup.find_all("h2",{"class":"genreTtl"})]
         subsection = soup.find_all("ul",{"class":"genreList"})
         for cat, section in zip(cats, subsection):
-            if cat == category:
-                sections = section.find_all('a')
-                return [n.a.get("href") for n in sections]
+            if cat_id == category:
+                #TODO: here should create a keywords lists on subcats
+                #to index and make search on tags available
+                for n in section.find_all('a'):
+                    mall_url = n.a.get("href")
+                    mall_id = mall_url.split("/")[-2]
+                    mall_name = n.text
+                    malls[mall_id] = {"mall_url":mall_url, "mall_name":mall_name, "cat_id":cat_id}
+            return malls
+        return None
+   
     def collect_luxury(self):
         ''' a shortcut for the exercise'''
         soup = self.get_url('http://www.rakuten.co.jp/category/fashiongoods/')
@@ -136,90 +189,121 @@ class RakutenExtractor(object):
             soup = self.get_url(url)
             for n in soup.find_all("a"):
                 if n is not None and n.get("href") is not None:
+                    # a shortcut search because DOM tree class 
+                    #is different for each page
                     if "search/mall" in n.get("href"):
                         it_bag_list.append(n.get("href"))
-        self.async(it_bag_list)
-        return "Ok"
-    
-    def select_category(self, cat):
-        '''
-        select the main page of a given category
-        '''
-        for cat_url in self.categories:
-            tag = cat_url.split("/")[-2]
-            if tag == cat:
-                soup = self.get_url(link_dir)
-                cat = soup.find("h1",{"class":"categoryTtl"})
-                return cat.a.get("href")
-    
-    def select_subcategory(self, cat):
-        ''' given a main category collect every subcategory'''
+        #TODO: asynchronous way of dowloading it
+        #self.async(it_bag_list)
+        if len(it_bag_list) > 0:
+            for bag_url in it_bal_list:
+                #download
+                items = self.extract_products(bag_url) 
+                #store
+                print(items)
+            return it_bag_list
+        else:
+            return False
+    def search_brand(self, brand="gucci"):
+        '''search for one brand in every category'''
+        categories = self.get_cats()
+        for cat in categories.keys():
+            self.search(cat,brand)
+        return 
         
-        subsection = soup.find_all("ul",{"class":"genreList"})
-        for cat_url, section in zip(cats, self.categories):
-            tag = cat_url.split("/")[-2]
-            if tag == cat:
-                sections = section.find_all('a')
-                return [n.a.get("href") for n in sections]
+        
+    def search_cat(self, cat="fashiongoods"):
+        ''' given a category slug search for every brand in this cat
+        retrieve only stats for the moment
+        TO DO: provide a method to collect products
+        '''
+        #TODO:
+        #here we should initiate a first recollection
+        # of cats stored in a ref db instead of collecting it each time
+        # with get_cat or get_cats methods
+        #
+        self.brands = self.get_brands()
+        if mall_url is not None:
+            for brand in self.brands.keys():
+                print(self.search(cat=cat, brand=brand))
+                #store stats?
+        else:
                 
-    def collect_main_mall(self, category):
-        ''' given a category url retrieve the top mall'''
-        soup = self.get_url(category)
-        main_mall = soup.find_all("h2",{"class":"genreTtl"})
-        return [n.a.get("href") for n in main_mall]
+            #TODO: if not found should search into submalls using keywords
+            # and matching with rate with a search_tag method
+            return False
+        
+    def search(self, cat="fashiongoods", brand="gucci"):
+        mall_url = self.get_cat(cat)
+        mall_id = mall_url["mall_id"]
+        #TO DO: here we could check that brand really exists
+        #and match
+        #but also work as it is
+        cat_search = "http://search.rakuten.co.jp/search/mall/%s/%s/?grp=product" %(brand, mall_id)
+        soup = self.get_url(cat_search)
+        stats = self.search_stats(soup, cat_search)
+        typology = self.get_typology(soup)
+        del stats["next_urls"]
+        print(stats, typology) 
+        return stats["results_n"]
     
-    def collect_submall(self, category):
-        ''' given a main category collect every subcategory '''
-        soup = self.get_url(self.type_url)
-        cats = [n.a.get("href") for n in soup.find_all("h2",{"class":"genreTtl"})]
-        subsection = soup.find_all("ul",{"class":"genreList"})
-        for cat, section in zip(cats, subsection):
-            if cat == category:
-                sections = section.find_all('a')
-                return [n.a.get("href") for n in sections]
-    
-    def async(self,list_url):
-        session = FuturesSession(max_workers=3)
-        for url in list_url:
-            future = session.get(url)
-            future.add_done_callback(self.extract_results)
-    
+            
     def async_next(self, list_url):
+        '''utility to dowload like async.io multiple url
+        and send them to extract_nexts
+        '''
         session = FuturesSession(max_workers=5)
         for url in list_url:
             future = session.get(url)
-            future.add_done_callback(self.extract_next)
+            future.add_done_callback(self.extract_nexts)
             
     def extract_nexts(self, future):
         response = future.result()
-        
         if response.status_code == 200:
             soup = bs(response.text, "lxml")
             self.db.insert_items(self.extract_page(soup))
-            
-    def extract_results(self, future):
-        results = []
-        response = future.result()
-        if response.status_code == 200:
-            soup = bs(response.text, "lxml")
-            search_res = self.get_results(soup, response.url)
-            first_page = self.extract_page(soup)
-            results.append(first_page)
-            
-            self.db.insert_items(results)
-            self.async_next(search_res["next_urls"])
-            del search_res["next_urls"]
-            self.db.insert_info(search_res)
-            print("Ok")
-            return
-            
-            
-            #self.async_download(res["next_urls"])
+        else:
+            pass
+    
+    def search_stats(self, soup, source_url):
+        ''' retrieve the main results info of a given search
+        html has already been dowloaded so we don't do it again
+        we need source_url to build next pages
+        search_results_nb
+        pages_nb
+        next_urls to download
+        '''
+        res = page.find("div",{"class":"rsrDispTxtBoxRight"}).b.next.next
+        if res is not None:
+            results_nb = get_nb(res)
+        else:
+            print("No results nb found")
+            return False 
+        page_nb = int(results_nb/45)
+        rest = results_nb%45
+        if rest > 0:
+            page_nb =  page_nb+1
+        next_urls = [source_url+"?p="+str(x) for x in range(2, page_nb+1)]
+        return {"results_nb": results_nb, "pages_nb": page_nb, "next_urls": next_url}
+        
+    def extract_products(self, url):
+        '''main function that download, extract and store results'''
+        products = []
+        soup = self.get_url(url)
+        stats = self.search_stats(soup)
+        first_products = self.extract_page(soup)
+        self.async_next(stats["next_urls"])
+        del stats["next_urls"]
+        print(stats)
+        return
+        
     def extract_page(self, page):
         '''extract the 45 results in the page'''
         return [self.extract_item(n) for n in page.find_all("div",{"class":"rsrSResultSect"})]
     
     def extract_item(self, page):
+        ''' an item correspond to a product description
+        '''
         item = {"photo_src":None,
                 "price":None,
                 "page_url":None,
@@ -270,9 +354,10 @@ class RakutenExtractor(object):
         
     def get_typology(self, page):
         '''
-        given a first page 
-        enhance categories information by
-        retrieving the nb of results for each category concerned by this search
+        given a search results on a brand
+        give a typology of product that the brand sells
+        i.e in which category and subcategory the brand has most products
+        represented gives a pretty good agnostic idea 
         '''
         product_type = page.find("ul",{"class":"rsrAsideArrowLi rsrGenreNavigation"})
         typology = {}
@@ -282,35 +367,24 @@ class RakutenExtractor(object):
                     res = get_nb(n.find("span", {"class": "rsrRegNum"}).text)
                 except(ValueError,AttributeError):
                     res = 0
-                typology[n.get("href")] = {"id":n.get("data-genreid"), "results_nb": res}
+                typology[n.get("href")] = {"mall_id":n.get("data-genreid"), "results_nb": res}
         return typology
-        
-    def get_results(self, page, url):
-        '''
-        given a first page
-        retrive:
-        - the total results_nb of item found, 
-        - the pages_nb,
-        - the next_urls list
-        - the results_nb  of items for other categories
-        '''
-        res = page.find("div",{"class":"rsrDispTxtBoxRight"}).b.next.next
-        if res is not None:
-            self.results_nb = get_nb(res)
-        else:
-            self.results_nb = 0 
-        self.page_nb = int(self.results_nb/45)
-        rest = self.results_nb%45
-        if rest > 0:
-            self.page_nb =  self.page_nb+1
-        self.next_urls = [url+"?p="+str(x) for x in range(2, self.page_nb+1)]
-        self.typology = self.get_typology(page)
-        search_results = {"results_nb": self.results_nb,
-                            "page_nb": self.page_nb,
-                            "next_urls": self.next_urls,
-                            "typology": self.get_typology(page)
-                            }
-        return search_results
-
+    def search_tag(self, tag=""):
+        ''' facility to search within a genre or a tag prvided by rk 
+        plateform and sitemap ''' 
+        raise NotImplementedError
+    
 if __name__== "__main__":
     rk = RakutenExtractor()
+    #multiple methods
+    #for the exercice 
+    rk.collect_luxury()
+    # for the API implementation
+    #search by brand every product
+    rk.search_brand("vuitton")
+    #search by category every brand
+    rk.search_cat("fashiongoods")
+    #search for a specific brand in a specific category
+    rk.search("fashiongoods", "vuitton")
+    #Not implemented
+    #rk.search_tag()
