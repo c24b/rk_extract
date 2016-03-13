@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 #coding: utf-8
+import sys
 import requests
 from bs4 import BeautifulSoup as bs
 import re
@@ -7,7 +8,6 @@ from urllib.parse import urlparse,urljoin, quote, quote_plus
 # Asynchronous HTTP Requests in Python 3.2
 #quite usefull when tons of urls have to be downloaded
 #from requests_futures.sessions import FuturesSession
-import json, csv
 from langdetect import detect
 import pymongo
 RE_INT = re.compile('([0-9+])', re.UNICODE)
@@ -89,33 +89,64 @@ class RakutenAPI(object):
                 pass
     
     def get_ids(self, query):
-        '''get the corresponding id of a given tag or name
-        TO DO forget fuzzy search with ngrams'''
-        tag = [ v for k,v in list(query.items()) if k != "brand"][0]
-        if tag =="その他":
-            return []
-        key = list(query.keys())[0]+"s"
-        if self.lang is None:
-            if detect(tag) == "ja":
-                self.lang = "jap"
-            else:
-                self.lang = "en"
-        
-        if getattr(self, key) is None:
-            self.collect_refs([key+"s"])
-        if tag.isdigit():
-            return self.db[key].find_one({"id": tag})
-        
-        for n in self.db[key].find():
-            try:
-                if tag  == n["name"]:
-                    return [n["id"]]
-            except KeyError:
-                if tag  == n["id"]:
-                    return [n["id"]]
-            if tag in n["tags"]:
-                return [n["id"]]
-        return []
+        self.ids = []
+        if "category" in query.keys():
+            return self.db.stores.find({"cat.id": query["category"]}).distinct("id")
+        elif "mall" in query.keys():
+            if query["mall"].isdigit():
+                self.tag = self.db.stores.find_one({"mall.id": int(query["mall"])})
+                print("Mall", self.tag)
+                return self.db.stores.find({"mall.id": int(query["mall"])}).distinct("id")
+            ids = self.db.stores.find({"mall.name": query["mall"]}).distinct("id")
+            ids2 = self.db.stores.find({"mall.tags":{"$in": [query["mall"]]}}).distinct("id")
+            ids.extend(ids2)
+            return ids
+        else:
+            if query["store"].isdigit():
+                self.tag = self.db.stores.find_one({"id": int(query["store"])})
+                print("Store", self.tag)
+                return self.db.stores.find({"id": int(query["store"])}).distinct("id")
+            ids = self.db.stores.find({"name": query["store"]}).distinct("id")
+            ids2 = self.db.stores.find({"tags":{"$in": [query["store"]]}}).distinct("id")
+            ids.extend(ids2)
+            
+            return ids
+            
+    #~ def get_ids(self, query):
+        #~ '''get the corresponding id of a given tag or name
+        #~ TO DOforget fuzzy search with ngrams'''
+        #~ tag = [v for k,v in list(query.items()) if k != "brand"][0]
+        #~ 
+        #~ if tag =="その他":
+            #~ return []
+        #~ key = list(query.keys())[0]
+        #~ if key == "category":
+            #~ key = "categories"
+        #~ else:
+            #~ key = key+"s"
+        #~ if self.lang is None:
+            #~ if detect(tag) == "ja":
+                #~ self.lang = "jap"
+            #~ else:
+                #~ self.lang = "en"
+        #~ 
+        #~ if getattr(self, key) is None:
+            #~ self.collect_refs([key+"s"])
+        #~ if tag.isdigit():
+            #~ tag_id = self.db[key].find_one({"id": tag})
+            #~ if tag_id is None:
+                #~ return []
+            #~ else:
+                #~ return [tag_id]
+        #~ 
+        #~ for n in self.db[key].find():
+            #~ 
+            #~ if tag  == n["name"]:
+                #~ return [n["id"]]
+            #~ if tag in n["tags"]:
+                #~ return [n["id"]]
+            #~ 
+        #~ return []
     
     def verify_brand(self, brand):
         brands = []
@@ -147,34 +178,40 @@ class RakutenAPI(object):
         else:
             try:
                 brand = query["brand"]
+                del query["brand"]
             except KeyError:
                 brand = None
-            if len([n for n in query.keys() if n in ["category","mall","store"]]) != 1:
-                sys.exit("Invalid name of parameters")
-            else:
-                return(query, brand)
+            
+                if len([n for n in query.keys() if n in ["category","mall","store"]]) != 1:
+                    sys.exit("Invalid name of parameters")
+            return(query, brand)
                  
     def search(self, **query):        
         '''ENTRY POINT'''
         self.query, self.brand = self.parse_query(query)
-        print("Search", self.query)
+        print("Search", self.query, self.brand)
         self.brand_ids = []
         self.tags_ids = []
         
         if self.brand is not None:
             if self.verify_brand(self.brand):
                 self.brand_ids.append(self.brand)
+            else:
+                sys.exit("Unknown brand")
+            if len(self.query.keys()) != 0:
+                self.tag_ids = self.get_ids(self.query)
+                for tag in self.tag_ids:
+                    for brand in self.brand_ids:
+                        self.search_products(brand,tag, query)
+            else:
+                for brand in self.brand_ids:
+                    self.search_products(brand,None, query)
         else:
-            self.brands_ids = self.brands.distinct("id")
-            
-        if self.query is not None:
             self.tag_ids = self.get_ids(self.query)
-        
-        for brand in self.brand_ids:
             for tag in self.tag_ids:
-                print(tag, brand)
-                self.search_products(brand,tag, query)
-    def geet_recommanded_cat(self, coup):
+                self.search_products(None,tag, query)
+        
+    def get_recommanded_cat(self, coup):
         pass
     def get_product_type(self, soup):
         '''
@@ -186,29 +223,19 @@ class RakutenAPI(object):
             for n in product_type.find_all("a"):
                 cat_id = n.get("data-genreid")
                 results_nb = re.sub("（⇒）", "more", n.span.span.text)
-                tag =  re.sub("（⇒）", "", n.text)
+                tag =  re.sub("（⇒）\n", "", n.text)
                 try:
                     results_nb = get_nb(results_nb)
                 except:
                     pass
-                print(results_nb, text)
-                    #~ tag = n.text.split("\n")[0]
-                    #~ if tag == "その他":
-                        #~ pass
-                    #~ else:
-                        #~ nb = get_nb(n.find("span", {"class": "rsrRegNum"}).text)
-                        #~ cat = self.db.stores.find_one({"name": tag})
-                        #~ if cat is None:
-                            #~ cat = self.db.malls.find_one({"name": tag})
-                            #~ 
-                        #~ 
-                        #~ stats = {"nb_results": nb, "cat":cat, "tag":tag}
+                
+                stats = {"nb_results": results_nb, "cat_id":cat_id, "tag":tag}
         except AttributeError:
             pass
         #~ 
         return stats 
     
-    def search_products(self, brand_id, tag_id, query):
+    def search_products(self, brand_id=None, tag_id=None, query=None):
         def get_results_nb(page):
             '''scrap the nb of search result'''
             try:
@@ -480,9 +507,16 @@ if __name__== "__main__":
     #r.search(category="fashiongoods")
     #extraction of fashion goods with louis vuitton's brands
     #r.search(brand="louis vuitton", category="fashiongoods")
-    #extraction of luxury bags of rebecca taylor in japanese
-    #r.search(brand="レベッカテイラ",  mall="ブランド雑貨")
-    #extraction of every brand for women bag
-    r.search(mall="レディースバッグ", brand="louis vuitton")
-    #r.search(store="110933", brand="ルイ・ヴィトン")
+    #extraction of a brand
+    #r.search(brand="レベッカテイラ")
+    #extraction of every items in mall_id 110933
+    #r.search(mall="110933")
+    #similar to
+    #r.search(mall="レディースバッグ")
+    #collect every items of mall women bags "レディースバッグ"  for each brand
+    for brand in r.brands.find():
+        print("Searching brand %s" %brand["id"])
+        r.search(brand= brand["id"],mall="レディースバッグ")
+    
+    
     
