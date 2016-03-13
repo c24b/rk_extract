@@ -8,6 +8,7 @@ from urllib.parse import urlparse,urljoin, quote, quote_plus
 #quite usefull when tons of urls have to be downloaded
 from requests_futures.sessions import FuturesSession
 import pymongo
+from langdetect import detect
 
 RE_INT = re.compile('([0-9+])', re.UNICODE)
 
@@ -25,12 +26,10 @@ class Database(object):
         self.PORT = port
         self.client = ""
         self.DB = ""
-        uri = self.HOST+":"+str(self.PORT)        
         try:
-            self.client = pymongo.MongoClient(uri)
-        except pymongo.errors.ConnectionFailure:
-            logging.warning("Unable to connect using uri %s" %uri)
-            sys.exit("InvalidUri : Unable to connect to MongoDB with url %s:%s" %(addr,port))
+            self.client = pymongo.MongoClient(self.HOST, self.PORT)
+        except:
+            self.client = pymongo.MongoClient()
         self.version = self.client.server_info()['version']
         self.t_version = tuple(self.version.split("."))
         self.db_name = database_name
@@ -76,7 +75,8 @@ class RkSearch(object):
                             return self.brands[b]
             print ("brand %s not found" %brand)
             return None
-
+    def search_mall(self, tag=""):
+        pass
     def search_by_cat(self, cat="レディースバッグ"):
         pass
     def search_by_tag(self, tag="レディースバッグ"):
@@ -99,8 +99,8 @@ class RakutenExtractor(object):
         self.mall_url = "http://search.rakuten.co.jp/search/mall/-/"
         #base url sheam for a filtered search by mall and brand
         #self.url = "http://search.rakuten.co.jp/search/mall/%s/%i/" %(self.brand, self.mall_id)
-        DB = Database()
-        self.db = DB.db
+        #DB = Database()
+        #self.db = DB.db
         #self.collect()
         
         
@@ -121,12 +121,10 @@ class RakutenExtractor(object):
             
     def collect_brands(self):
         '''brands are defined by editorialisation work inside event
-        brands are listed in a dict (json format compatible)
-        format
+        brands are listed in a dict (json format compatible) with corresponding langage
         '''
-        self.brands = []
+        self.brands = {"jap":{}, "en":{}}
         soup = self.parse(self.brand_url)
-        
         #here initially a list comprehension
         # but decomposed for clarety
         for b in soup.find_all("li"):
@@ -135,9 +133,14 @@ class RakutenExtractor(object):
             if b.find("a") is not None and b.find("span", {"class":"brandNm"}) is not None:
                 
                 brand_url = b.find("a").get("href")
+                brand_url = "/".join(brand_url.split("/")[:-2])
                 name_en, name_jp = (b.find("span", {"class":"brandNm"}).text).split(u"（")
                 name_jp = name_jp.split(u"）")[0]
-                self.brands.append({"id": name_en, "en": name_en, "jp": name_jp, "url":brand_url})
+                tags_jp = [n for n in re.split("・|ー| ", name_jp) if n!= ""]
+                tags_en = [n for n in re.split(" |&|・", name_en)  if n!= ""]
+                self.brands["jap"][name_jp] = {"url": brand_url, "tags": tags_jp, "en": name_en.lower()}
+                self.brands["en"][name_en.lower()] = {"url": brand_url, "tags": tags_en, "jap": name_jp}
+                
         return self.brands
     def collect(self):
         '''collect data from rk website and store it'''
@@ -177,14 +180,13 @@ class RakutenExtractor(object):
             
             genre["id"] = genre["url"].split("/")[-2]
             genre["name"] = g[1].decode('utf-8')
-            genre["tags"]  = genre["name"].split("・")
+            genre["tags"]  = re.split("・|ー| |&",genre["name"])
             genre["ids"] = []
             genre["categories"] = []
             for n in cat.find_all("li"):
                 url = n.find("a").get("href")
                 text = re.sub('\n|\(=>\)', "", n.text)
-                tags =  re.split("・", text)
-                genre["sub_tags"] = tags
+                tags = re.split("・|ー| |&",text)
                 tags = [n for n in tags if n != ""]
                 cat_id =  url.split("/")[-2]
                 genre["ids"].append(cat_id)
@@ -250,10 +252,50 @@ class RakutenExtractor(object):
         item["position"] = str(item_pos)+"/"+str(page_nb)
         item["rank"] = item_pos+((page_nb-1)*45)
         return item
+    
+    def search_mall_id(self, url):
+        self.results = {}
+        soup = self.parse(url, "utf-8")
         
+        self.others = self.get_repartition(soup)
+        top_mall_ids = soup.find("li", {"class":"recommendedTopLi"})
+        return [a.get("data-genreid") for a  in top_mall_ids.find_all("a")]
+            
+            
+        
+    def search_by_brand(self, brand):
+        '''method to search by brand return the mall ids with results repartition'''
+        self.collect_brands()
+        if detect(brand) == "ja":
+            if brand in self.brands["jap"].keys():
+                return self.search_mall_id(self.brands["jap"][brand]["url"])
+            else:
+                brand_t = re.split("・|ー| |&", brand)
+                for k,v in self.brands["jap"].items():
+                    for t in v["tags"]:
+                        if t == brand:
+                            return(self.search_mall_id(self.brands["jap"][k]["url"]))
+                        for tag in brand_t:
+                            if tag == t:
+                                return(self.search_mall_id(self.brands["jap"][k]["url"]))
+        else:
+            if brand.lower() in self.brands["en"].keys():
+                
+                return(self.search_mall_id(self.brands["en"][brand.lower()]["url"]))
+            else:
+                brand_t = re.split("・|ー| |&", brand)
+                for k,v in self.brands["en"].items():
+                    for t in v["tags"]:
+                        if t == brand:
+                            return(self.search_mall_id(self.brands["en"][k]["url"]))
+                        for tag in brand_t:
+                            if tag == t:
+                                return(self.search_mall_id(self.brands["en"][k]["url"]))
+    def search_by_kw(self, kw):
+        pass
     def search_by_id(self, cat_id):
         self.collect_typology()
-        return [n["tags"] for n in self.categories if n["id"] == cat_id]
+        return [n["tags"] for n in self.categories if n["id"] == cat_id or n["tags"] for n in self.genres if n["id"] == cat_id]
     
     def get_search_results(self, brand=None, mall_id=None):
         
@@ -277,51 +319,52 @@ class RakutenExtractor(object):
                     url = "http://search.rakuten.co.jp/search/mall/%s/" %(brand)
         self.brand = brand
         self.category_id = mall_id
-        
         page = self.parse(url, "utf-8")
-        res = page.find("div",{"class":"rsrDispTxtBoxRight"}).b.next.next
-        if res is not None:
-            self.results_nb = get_nb(res)
-        else:
-            self.results_nb = 0 
-        self.page_nb = int(self.results_nb/45)
-        rest = self.results_nb%45
-        if rest > 0:
-            self.page_nb =  self.page_nb+1
-        self.page_nb = int(self.results_nb/45)
-        rest = self.results_nb%45
-        if rest > 0:
-            self.page_nb =  self.page_nb+1
-        self.results["stats"] = self.get_neighbours(page)
-        self.results["results_nb"] =  self.results_nb
-        self.results["page_nb"] = self.page_nb
+        self.results["results_nb"] =  self.get_results_nb(page)
+        self.results["page_nb"] = self.get_pagination(self.results_nb)
+        self.results["stats"] = self.get_repartition(page)
         #first page already downloaded so DRY
         #and insert it directly into items
         self.db.items.insert(self.get_results(page))
         self.next_urls = [url+"?p="+str(x) for x in range(2, self.page_nb+1)]
         return self
         
+    def get_pagination(self, nb, offset=45):
+        '''calculate page nb offset'''
+        self.page_nb = int(self.results_nb/offset)
+        rest = self.results_nb%45
+        if rest > 0:
+            self.page_nb =  self.page_nb+1
+        self.page_nb = int(self.results_nb/offset)
+        rest = self.results_nb%offset
+        if rest > 0:
+            self.page_nb =  self.page_nb+1
+        return self.page_nb
         
-    def get_neighbours(self,soup):
-        ''' get neighbours give the nb of products found in other categories
-        during search help enlarge the initial search
-        a way to explore the repartition of a brand
+    def get_results_nb(self, page):
+        '''scrap the nb of search result'''
+        res = page.find("div",{"class":"rsrDispTxtBoxRight"}).b.next.next
+        if res is not None:
+            self.results_nb = get_nb(res)
+        else:
+            self.results_nb = 0 
+        
+        
+    def get_repartition(self,soup):
         '''
-        
+        get repartition in categories and genre of a search results
+        '''
         stats = {}
         try:
-            product_type = soup.find("ul",{"class":"rsrAsideArrowLi rsrGenreNavigation"})
+            product_type = soup.find("ul",{"class":"rsrGenreNavigation"})
             
             for n in product_type.find_all('a'):
                 if n.find("span") is not None:
-                    #~ try:
                     cat_id = n.get("data-genreid")
-                    
+                    text = n.text.split("\n")[0]
                     nb = get_nb(n.find("span", {"class": "rsrRegNum"}).text)
-                    stats[cat_id] = {"nb_results": nb, "tags":self.search_by_id(cat_id)}
-                    #~ except:
-                        #~ cat_id
-                        #~ stats[n.get("data-genreid")] = {"name": name.decode("utf-8"), "nb_results":0}
+                    stats[cat_id] = {"nb_results": nb, "tags":self.search_by_id(cat_id), "genre":text}
+                    
         except AttributeError:
             pass
         
@@ -337,8 +380,13 @@ if __name__== "__main__":
     #print(r.genres[-1]["id"])
     #print(r.categories[-1])
     #print(r.brands)
-    
-    r.get_search_results("vuitton", 216131)
-    print(r.results)
+    #r.search_by_brand("の検索結果")
+    r.collect()
+    #print(r.categories[0])
+    #print(r.genres[0])
+    #print(r.search_by_brand("louis vuitton"))
+    print(r.search_by_brand("ルイ ヴィトン"))
+    #r.get_search_results("vuitton", 216131)
+    #print(r.results)
     
     
