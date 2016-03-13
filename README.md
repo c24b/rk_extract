@@ -147,4 +147,9 @@ example
     
     #rk.search_tag()
 ```
-Pour 
+### Next steps
+
+* + de stats et notamment gestion intelligentes des cat
+* une interface qui expose les données 
+* un joli graph?
+* une vision de trending topic dans Rk
