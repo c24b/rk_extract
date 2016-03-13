@@ -89,13 +89,9 @@ class RakutenAPI(object):
                 pass
     
     def get_ids(self, query):
-        '''get the corresponding id of a given tag or name'''
-        ids = []
-        print(query)
-        #list de dict return id if tag in tags of store
-            #else load Mall return id if tag in tags of mall
-            #else load cat return id if tag in tags of cat
-        tag = list(query.values())[0]
+        '''get the corresponding id of a given tag or name
+        TO DO forget fuzzy search with ngrams'''
+        tag = [ v for k,v in list(query.items()) if k != "brand"][0]
         if tag =="その他":
             return []
         key = list(query.keys())[0]+"s"
@@ -108,7 +104,7 @@ class RakutenAPI(object):
         if getattr(self, key) is None:
             self.collect_refs([key+"s"])
         if tag.isdigit():
-            return self.db[key].find({"id": tag})
+            return self.db[key].find_one({"id": tag})
         
         for n in self.db[key].find():
             try:
@@ -464,7 +460,7 @@ class RakutenExtractor(object):
                 for c in mall2.find_all("li"):
                     s = {}
                     s["id"] = get_nb(c.find("a").get("href"))
-                    s["name"] = c.find("a").text.replace("(=>)", "").lower()
+                    s["name"] = c.find("a").text.replace("(=>)", "")
                     s["tags"] = [n for n in re.split("・|ー| |&", s["name"]) if n !=""]
                     s["cat"] = self.DB.categories.find_one({"id":mall["cat_id"]})
                     s["mall"] = mall
@@ -477,8 +473,8 @@ class RakutenExtractor(object):
         
 if __name__== "__main__":
     #Create the reference database
-    refs = RakutenExtractor()
-    refs.build()
+    #refs = RakutenExtractor()
+    #refs.build()
     r = RakutenAPI()
     #generic extraction of every brands for category fashion goods
     #r.search(category="fashiongoods")
@@ -487,6 +483,6 @@ if __name__== "__main__":
     #extraction of luxury bags of rebecca taylor in japanese
     #r.search(brand="レベッカテイラ",  mall="ブランド雑貨")
     #extraction of every brand for women bag
-    #r.search(mall="レディースバッグ", brand="louis vuitton")
-    r.search(store="110933", brand="ルイ・ヴィトン")
+    r.search(mall="レディースバッグ", brand="louis vuitton")
+    #r.search(store="110933", brand="ルイ・ヴィトン")
     
